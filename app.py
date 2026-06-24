@@ -345,11 +345,22 @@ with tab_ask:
             st.session_state.ask_query = query
 
             with st.spinner("Searching knowledge base..."):
-                results = query_knowledge_base(
-                    query=query,
-                    vector_store=vector_store,
-                    groq_api_key=st.secrets["GROQ_API_KEY"],
-                )
+                try:
+                    results = query_knowledge_base(
+                        query=query,
+                        vector_store=vector_store,
+                        groq_api_key=st.secrets["GROQ_API_KEY"],
+                    )
+                except Exception as e:
+                    if "rate_limit" in str(e).lower() or "429" in str(e):
+                        st.warning(
+                            "⏳ Groq API daily limit reached. "
+                            "The Ask tab will work again after midnight US time. "
+                            "The Browse tab works normally in the meantime."
+                        )
+                    else:
+                        st.error(f"Something went wrong: {str(e)}")
+                    st.stop()
 
             st.markdown("---")
 
