@@ -298,7 +298,7 @@ with tab_browse:
     st.divider()
     st.caption(
         f"Want to learn more? Switch to the **Ask** tab and type: "
-        f"*'Tell me everything about {sign[\"gardiner_code\"]} — {sign[\"english_name\"]}'*"
+        f"*'Tell me everything about {sign['gardiner_code']} — {sign['english_name']}'*"
     )
 
 
