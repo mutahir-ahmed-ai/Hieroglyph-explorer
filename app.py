@@ -334,9 +334,12 @@ with tab_ask:
     st.markdown("")
 
     # Text input
+    if "ask_query" not in st.session_state:
+        st.session_state.ask_query = ""
+
     query = st.text_input(
         "Your question:",
-        value=st.session_state.get("ask_query", ""),
+        key="ask_query",
         placeholder="e.g. What does the seated man hieroglyph represent?",
     )
 
@@ -350,6 +353,7 @@ with tab_ask:
                         query=query,
                         vector_store=vector_store,
                         groq_api_key=st.secrets["GROQ_API_KEY"],
+                        df=df,
                     )
                 except Exception as e:
                     if "rate_limit" in str(e).lower() or "429" in str(e):
