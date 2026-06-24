@@ -345,7 +345,7 @@ with tab_ask:
 
     if st.button("🔍 Search", type="primary"):
         if query.strip():
-            st.session_state.ask_query = query
+            
 
             with st.spinner("Searching knowledge base..."):
                 try:
