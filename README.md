@@ -2,7 +2,7 @@
 
 An AI-powered reference tool for ancient Egyptian hieroglyphs built on Gardiner's complete Sign List. Browse all 770 signs with their Unicode characters, or ask anything in natural language and get a scholar-quality answer from the knowledge base.
 
-
+Live Demo: https://hieroglyph-explorer-fus8jsejdqktgheeuyogyz.streamlit.app/
 ---
 
 ## What It Does
