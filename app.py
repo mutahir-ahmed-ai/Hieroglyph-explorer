@@ -206,7 +206,7 @@ with tab_browse:
             unsafe_allow_html=True
         )
         st.markdown(
-            '<div class="field-explain">Gardiner grouped all ~750 signs into '
+            '<div class="field-explain">Gardiner grouped all ~770 signs into '
             '26 categories based on what the sign depicts — people, animals, '
             'plants, buildings, etc.</div>',
             unsafe_allow_html=True
