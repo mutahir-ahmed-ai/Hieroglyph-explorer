@@ -143,7 +143,7 @@ with tab_browse:
     selected_cat_label = st.selectbox(
         "Category",
         options=list(cat_labels.keys()),
-        help="Gardiner's Sign List groups hieroglyphs into 25 categories "
+        help="Gardiner's Sign List groups hieroglyphs into 26 categories "
              "based on what they depict."
     )
     selected_cat = cat_labels[selected_cat_label]
@@ -207,7 +207,7 @@ with tab_browse:
         )
         st.markdown(
             '<div class="field-explain">Gardiner grouped all ~750 signs into '
-            '25 categories based on what the sign depicts — people, animals, '
+            '26 categories based on what the sign depicts — people, animals, '
             'plants, buildings, etc.</div>',
             unsafe_allow_html=True
         )
