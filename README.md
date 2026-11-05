@@ -47,7 +47,7 @@ Matched Gardiner codes → Unicode glyphs displayed alongside the answer
 
 **Grounded refusals.** For questions the router lets through but retrieval can't support (e.g. *"the most common determinative in category G"* when no G chunks are retrieved), the system prompt instructs the model that it never sees the full sign list and must not claim exhaustive knowledge — so it answers honestly that the context is insufficient rather than fabricating.
 
-**Tested.** Routing behaviour is validated by a 23-query regression battery covering: per-category counts (by letter and by name), totals, category counts, most/fewest superlatives, sign-code precedence over aggregates, and negative cases that must *not* be hijacked by the router. The battery is in `tests/test_routing.py` and runs without an API key (`pip install pytest`, then `pytest -v`). It caught a real bug: three categories (K, L and Q, 7 signs each) tie for the fewest signs, and the router used to name only the first. It now names every tied category.
+**Tested.** Routing behaviour is validated by a 25-query regression battery covering: per-category counts (by letter and by name), totals, category counts, most/fewest superlatives, sign-code precedence over aggregates (including codes typed with a space, like "N 22"), and negative cases that must *not* be hijacked by the router. The battery is in `tests/test_routing.py` and runs without an API key (`pip install pytest`, then `pytest -v`). It caught a real bug: three categories (K, L and Q, 7 signs each) tie for the fewest signs, and the router used to name only the first. It now names every tied category.
 
 The knowledge base is built from two source files:
 
