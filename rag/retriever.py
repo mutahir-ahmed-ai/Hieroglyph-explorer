@@ -37,8 +37,15 @@ def _extract_gardiner_codes(query: str, df: pd.DataFrame) -> list[str]:
     3. Every candidate is validated against the actual dataset, so a
        stray letter+digit token that isn't a real sign can never
        trigger a bogus direct lookup.
+    4. 'N 22' / 'N-22' / 'Aa 10' (space or hyphen) now match too — only
+       with a CAPITAL letter, so everyday text like 'a 2-line answer'
+       is never read as sign A2.
     """
-    candidates = re.findall(r'\b(aa\d+[a-z]?|[a-z]\d+[a-z]?)\b', query.lower())
+    found = [(m.start(), m.group(1)) for m in
+             re.finditer(r'\b(aa\d+[a-z]?|[a-z]\d+[a-z]?)\b', query.lower())]
+    found += [(m.start(), (m.group(1) + m.group(2)).lower()) for m in
+              re.finditer(r'\b(Aa|[A-Z])[ \-](\d+[a-z]?)\b', query)]
+    candidates = [c for _, c in sorted(found)]   # keep the order typed
 
     valid = set(df["gardiner_code"].str.upper())
     codes, seen = [], set()
@@ -303,13 +310,17 @@ Your answers should:
 - Be accurate, detailed, and educational
 - Explain technical terms (phonogram, determinative, biliteral etc.) in plain language
 - Reference specific Gardiner sign codes when relevant (e.g. G17 for the owl)
-- Be engaging — hieroglyphs are fascinating and you should convey that
+- Be engaging in tone, but never add uses, contexts, documents or history that are not
+  in the sign's entry (e.g. if the entry says "estate boundary; field division", do not
+  add "tax assessments"). If you use an analogy, make clear it is only an analogy.
 
 IMPORTANT rules:
 - If the user asks about SPECIFIC sign codes (V34, G17, Aa10 etc.), the first context
   blocks contain those signs. Focus your answer on them.
 - Use exact facts from the context — phonetic values, meanings, contexts.
-- If the requested sign is genuinely absent from the context, say so honestly and briefly.
+- If a requested sign is not in the context, say its entry was not among the retrieved
+  signs (never claim the knowledge base lacks it) and suggest asking with its exact
+  Gardiner code, e.g. "N22".
 - Do NOT invent or guess information. Everything must come from the context.
 - The context contains only the retrieved signs, never the full sign list —
   so never claim to give exhaustive counts or complete listings.
