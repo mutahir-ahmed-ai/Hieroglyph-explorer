@@ -229,14 +229,23 @@ def _answer_aggregate(kind: str, arg, df: pd.DataFrame) -> dict:
 
     if kind in ('category_least', 'category_most'):
         counts = df.groupby('category_letter').size()
-        letter = counts.idxmin() if kind == 'category_least' else counts.idxmax()
-        name = df[df['category_letter'] == letter]['category_name'].iloc[0]
+        names = df.groupby('category_letter')['category_name'].first()
         n = int(counts.min() if kind == 'category_least' else counts.max())
         adjective = "fewest" if kind == 'category_least' else "most"
-        answer = (
-            f"The category with the {adjective} signs is "
-            f"{letter} ({name}) with {n} signs."
-        )
+        # Several categories can share the same count — name every one,
+        # not just the first (idxmin/idxmax silently drop the others).
+        letters = counts[counts == n].index.tolist()
+        if len(letters) == 1:
+            answer = (
+                f"The category with the {adjective} signs is "
+                f"{letters[0]} ({names[letters[0]]}) with {n} signs."
+            )
+        else:
+            listing = ", ".join(f"{l} ({names[l]})" for l in letters)
+            answer = (
+                f"{len(letters)} categories tie for the {adjective} signs, "
+                f"with {n} signs each: {listing}."
+            )
         return {"answer": answer, "matched_codes": []}
 
     return {"answer": "Unable to compute that.", "matched_codes": []}
@@ -322,7 +331,13 @@ Please provide a detailed, accurate answer."""
             {"role": "user",   "content": user_message},
         ],
         temperature=0.3,
-        max_tokens=1024,
+        # gpt-oss is a reasoning model: its hidden reasoning tokens count
+        # towards max_tokens, so leave room for the visible answer too.
+        max_tokens=2048,
+        # Low effort is plenty for answering from retrieved context and
+        # keeps responses fast. Sent via extra_body so it works on any
+        # groq SDK version.
+        extra_body={"reasoning_effort": "low"},
     )
 
     return {
