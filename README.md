@@ -1,135 +1,346 @@
-# 𓂀 Hieroglyph Explorer
+import re
+import streamlit as st
+import pandas as pd
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from groq import Groq
+from rag.knowledge_base import build_documents
 
-An AI-powered reference tool for ancient Egyptian hieroglyphs built on Gardiner's complete Sign List. Browse all 770 signs with their Unicode characters, or ask anything in natural language and get a scholar-quality answer from the knowledge base.
 
-Live Demo: https://hieroglyph-explorer-fus8jsejdqktgheeuyogyz.streamlit.app/
+@st.cache_resource
+def get_vector_store(_df: pd.DataFrame) -> FAISS:
+    """
+    Build and cache the FAISS vector index from all 770 sign documents.
 
----
+    NOTE: no text splitter here — the longest sign document is ~500
+    characters, so a chunk_size=800 splitter never actually split
+    anything. One sign = one document = one vector, guaranteed whole.
+    """
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True}
+    )
+    docs = build_documents(_df)
+    return FAISS.from_documents(docs, embeddings)
 
-## What It Does
 
-**Browse tab** — Select a category (e.g. "G — Birds") then a specific sign. See the hieroglyph displayed large, with every field from the Gardiner Sign List explained in plain English — phonetic value, sign type, primary and secondary meanings, common contexts, and scholarly notes.
+# ── Phase 1: Direct Gardiner-code lookup ────────────────────────────────────
 
-**Ask tab** — Type any question in natural language. The system routes it to the right answering strategy and responds. Examples:
+def _extract_gardiner_codes(query: str, df: pd.DataFrame) -> list[str]:
+    """
+    Detect Gardiner codes in the query — case-insensitive, multi-code.
 
-- *"What does the owl hieroglyph mean?"* → finds G17, explains phonetic value *m*, its uses across inscriptions
-- *"Which signs represent water?"* → finds N35, N41, W14, N39, N4 — ripples, wells, jars, pools, and rain
-- *"How many signs are in category A?"* → **62** (58 verified, 4 needing review) — answered instantly, computed directly from the dataset
-- *"tell me about g17"* → lowercase and multi-code queries ("compare a1 and b1") resolve directly
-- *"What is a determinative?"* → explains the concept with concrete examples from the knowledge base
+    Fixes over the previous version:
+    1. 'g17' / 'v34' (lowercase, how real users type) now match.
+    2. 'Compare A1 and B1' returns BOTH codes, not just the first.
+    3. Every candidate is validated against the actual dataset, so a
+       stray letter+digit token that isn't a real sign can never
+       trigger a bogus direct lookup.
+    """
+    candidates = re.findall(r'\b(aa\d+[a-z]?|[a-z]\d+[a-z]?)\b', query.lower())
 
----
+    valid = set(df["gardiner_code"].str.upper())
+    codes, seen = [], set()
+    for raw in candidates:
+        if raw.startswith('aa'):
+            code = 'Aa' + raw[2:]
+        else:
+            code = raw[0].upper() + raw[1:]
+        if code.upper() in valid and code.upper() not in seen:
+            codes.append(code)
+            seen.add(code.upper())
+    return codes
 
-## Architecture — Three-Phase Retrieval
 
-```
-User query
-    ↓
-Phase 0 — QUERY ROUTER
-    Aggregate question? (counts, totals, most/fewest, per-category)
-    → answered deterministically by pandas. No LLM call. No hallucination risk.
-    ↓ otherwise
-Phase 1 — DIRECT CODE LOOKUP
-    Gardiner code(s) in the query? (case-insensitive, multi-code,
-    validated against the real dataset)
-    → exact DataFrame lookup, guaranteed hit
-    ↓ plus
-Phase 2 — SEMANTIC SEARCH
-    all-MiniLM-L6-v2 embeds the query → 384-dim normalized vector
-    → FAISS similarity search → top-k sign documents
-    ↓
-Groq Llama 3.3 70B synthesises the answer from retrieved context only
-    ↓
-Matched Gardiner codes → Unicode glyphs displayed alongside the answer
-```
+def _direct_lookup(code: str, df: pd.DataFrame) -> str | None:
+    """
+    Look up a Gardiner code directly in the DataFrame.
+    100% reliable — no FAISS involved, just a filter.
+    """
+    match = df[df["gardiner_code"].str.upper() == code.upper()]
+    if match.empty:
+        return None
+    row = match.iloc[0]
 
-**Why the router exists — a real failure mode, found and fixed.** Earlier versions answered *"How many signs are in category A?"* with confidently invented numbers. The mechanism: top-k similarity search retrieves the k chunks that *mean* the most like the question — but a count is a property of the whole table, which no k chunks ever contain. The LLM, seeing only 5 sign entries and asked "how many," produced a fluent guess. A prompt instruction ("do not invent information") did not reliably prevent it, because prompt-level rules are probabilistic. The fix is architectural: counting questions never reach the LLM at all — pandas computes the answer with zero generation step left to fail.
+    def clean(val) -> str:
+        s = str(val).strip()
+        return "" if s.lower() in ("none", "nan", "") else s
 
-**Grounded refusals.** For questions the router lets through but retrieval can't support (e.g. *"the most common determinative in category G"* when no G chunks are retrieved), the system prompt instructs the model that it never sees the full sign list and must not claim exhaustive knowledge — so it answers honestly that the context is insufficient rather than fabricating.
+    parts = [
+        f"Gardiner sign {clean(row.get('gardiner_code'))} is called the "
+        f"{clean(row.get('english_name'))}.",
+        f"It belongs to category {clean(row.get('category_name'))}.",
+    ]
+    phonetic = clean(row.get("phonetic_value"))
+    if phonetic:
+        parts.append(
+            f"Its phonetic value is '{phonetic}', meaning it represents "
+            f"that sound in writing."
+        )
+    else:
+        parts.append(
+            "It has no phonetic value and is used purely as a determinative."
+        )
+    if clean(row.get("type")):
+        parts.append(f"It functions as a {clean(row.get('type'))}.")
+    if clean(row.get("primary_meaning")):
+        parts.append(f"Primary meaning: {clean(row.get('primary_meaning'))}.")
+    if clean(row.get("secondary_meanings")):
+        parts.append(f"Secondary uses include: {clean(row.get('secondary_meanings'))}.")
+    if clean(row.get("common_contexts")):
+        parts.append(f"Commonly found in: {clean(row.get('common_contexts'))}.")
+    if clean(row.get("notes")):
+        parts.append(f"Notes: {clean(row.get('notes'))}.")
+    if str(row.get("status", "")) == "Needs Review":
+        parts.append(
+            "Note: this sign is uncertain and needs further scholarly review."
+        )
 
-**Tested.** Routing behaviour is validated by a 23-query regression battery covering: per-category counts (by letter and by name), totals, category counts, most/fewest superlatives, sign-code precedence over aggregates, and negative cases that must *not* be hijacked by the router.
+    return " ".join(parts)
 
-The knowledge base is built from two source files:
 
-- `Gardiner_Sign_List_COMPLETE.xlsx` — 711 verified signs with full metadata
-- `Gardiner_Uncertain_Signs.csv` — 59 needs-review signs
+# ── Phase 0: Aggregate / meta-question routing ──────────────────────────────
+# Questions that require counting or grouping across the ENTIRE dataset.
+# FAISS structurally cannot answer these (top-k retrieval never sees the
+# whole table), so they are answered deterministically from pandas.
+#
+# ROUTING LAW: specific patterns are checked BEFORE general ones.
+# 'how many signs in category A' must hit the category handler, and must
+# NOT fall through to the total-signs handler.
 
-Each sign is converted to a natural-language document that FAISS searches semantically. "What makes an owl sound" finds G17 even though the user never typed "G17" or "phonetic m" — meaning-based retrieval, not keyword matching. One sign = one document = one vector; the longest document is ~500 characters, so no chunk splitting is needed and every sign is always retrieved whole.
+_COUNT_WORDS = r'\bhow many\b|\btotal\b|\bcount\b|\bnumber of\b'
 
----
 
-## The Hieroglyph Images
+def _category_from_query(q: str, df: pd.DataFrame):
+    """Find a category referenced by LETTER or by NAME. Returns letter or None."""
+    letters = set(df["category_letter"].str.lower())
 
-Signs are displayed as Unicode characters from the Egyptian Hieroglyphs block (U+13000–U+1342F), standardised in Unicode 5.2. All 770 signs in the database are mapped — 760 with confirmed Unicode characters, 10 rare variants with a fallback symbol.
+    # By letter: 'category A', 'the U category', 'group Aa'.
+    # Each pattern runs SEPARATELY — a combined alternation lets an early
+    # junk match (the word 'in' before 'category') consume the text that
+    # the real match needed. Every candidate is validated against the data.
+    for pat in (
+        r'\bcategor(?:y|ies)\s+([a-z]{1,2})\b',   # 'category a'
+        r'\b([a-z]{1,2})\s+category\b',           # 'u category'
+        r'\bgroup\s+([a-z]{1,2})\b',              # 'group aa'
+    ):
+        for m in re.finditer(pat, q):
+            letter = m.group(1)
+            if letter in letters:
+                return letter.upper() if len(letter) == 1 else letter.capitalize()
 
-No image files. No hosting. Clean, sharp, scalable — rendered by the browser using the Noto Sans Egyptian Hieroglyphs font.
+    # By name: 'bird signs', 'how many mammals', 'fish category'
+    names = df.groupby("category_letter")["category_name"].first()
+    for letter, name in names.items():
+        for word in re.findall(r'[a-z]+', str(name).lower()):
+            if len(word) < 4:          # skip 'and', 'his', 'her', 'of'...
+                continue
+            # match singular or plural form as a whole word
+            if re.search(rf'\b{word}s?\b|\b{word.rstrip("s")}\b', q):
+                return letter
+    return None
 
----
 
-## Tech Stack
+def _detect_aggregate_query(query: str, df: pd.DataFrame):
+    """Returns (kind, arg) if this is an aggregate question, else None."""
+    q = query.lower()
+    counting = bool(re.search(_COUNT_WORDS, q))
 
-| Component | Tool |
-|---|---|
-| Query routing | pandas (deterministic aggregates) |
-| Vector search | FAISS in-process (normalized embeddings — inner product = cosine similarity) |
-| Embeddings | HuggingFace all-MiniLM-L6-v2 |
-| LLM | Llama 3.3 70B via Groq |
-| Framework | LangChain |
-| Hieroglyph display | Unicode U+13000–U+1342F |
-| UI | Streamlit |
-| Data | pandas + openpyxl |
+    # 0. If the query names a real sign code (Z1, G17...), it is a
+    #    sign-specific question — never an aggregate. Bail out so
+    #    'how many strokes does Z1 have' goes to direct lookup.
+    if _extract_gardiner_codes(query, df):
+        return None
 
----
+    # 1. MOST SPECIFIC: count of signs in one category — by letter
+    #    ('category A') or by name ('bird signs', 'how many mammals')
+    if counting:
+        letter = _category_from_query(q, df)
+        if letter:
+            return ('category_specific', letter)
 
-## Known Limitations
+    # 2. Number of categories
+    if counting and re.search(r'\bcategor(?:y|ies)\b|\bgroups?\b', q) \
+            and not re.search(r'\bsigns?\s+(?:are\s+)?in\b', q):
+        if re.search(r'how many (?:categories|groups)\b|number of (?:categories|groups)\b', q):
+            return ('category_count', None)
 
-- Filtered aggregates ("most common determinative *within* category G") fall through to semantic search, which answers honestly when context is insufficient rather than computing the true answer — a metadata-filtered retrieval pass is the planned fix.
-- Category detection by name uses word matching against category names; unusual phrasings may fall through to semantic search (which fails safe: the LLM is instructed never to claim exhaustive counts).
-- FAISS index is rebuilt on cold start (~3–4 min first boot on Streamlit Cloud).
+    # 3. Category with most/fewest signs — must run BEFORE total_signs,
+    #    or 'least number of signs' gets swallowed by the general pattern. — requires explicit sign-counting
+    #    intent, so 'most common determinative in category G' does NOT match.
+    superlative = re.search(
+        r'\b(most|fewest|least|largest|biggest|smallest)\b[^.?!]*\bsigns?\b'
+        r'|\bsigns?\b[^.?!]*\b(most|fewest|least)\b'
+        r'|which (?:category|group) (?:has|is) the '
+        r'(most|fewest|least|largest|biggest|smallest)\b',
+        q,
+    )
+    if superlative and re.search(r'\bcategor|\bgroup\b', q):
+        word = next(g for g in superlative.groups() if g)
+        if word in ('fewest', 'least', 'smallest'):
+            return ('category_least', None)
+        return ('category_most', None)
 
----
+    # 4. Total signs (MOST GENERAL — always checked last)
+    if counting and re.search(r'\bsigns?\b|\bhieroglyphs?\b', q):
+        return ('total_signs', None)
 
-## Deployment
+    return None
 
-### 1. Create repo and upload files
 
-Create a new GitHub repo named `hieroglyph-explorer`. Upload all project files **and** the two data files:
+def _answer_aggregate(kind: str, arg, df: pd.DataFrame) -> dict:
+    if kind == 'category_specific':
+        subset = df[df['category_letter'] == arg]
+        name = subset['category_name'].iloc[0]
+        verified = int((subset['status'] == 'Verified').sum())
+        review = int((subset['status'] == 'Needs Review').sum())
+        answer = (
+            f"Category {arg} ({name}) contains {len(subset)} signs — "
+            f"{verified} verified"
+            + (f" and {review} flagged as needing scholarly review."
+               if review else ".")
+        )
+        return {"answer": answer, "matched_codes": []}
 
-```
-hieroglyph-explorer/
-├── rag/
-│   ├── __init__.py
-│   ├── knowledge_base.py
-│   └── retriever.py
-├── utils/
-│   ├── __init__.py
-│   └── unicode_map.py
-├── Gardiner_Sign_List_COMPLETE.xlsx   ← upload this
-├── Gardiner_Uncertain_Signs.csv       ← upload this
-├── app.py
-├── requirements.txt
-└── README.md
-```
+    if kind == 'total_signs':
+        total = len(df)
+        verified = int((df['status'] == 'Verified').sum())
+        review = int((df['status'] == 'Needs Review').sum())
+        answer = (
+            f"There are {total} total signs in the Gardiner Sign List used "
+            f"by this system — {verified} verified and {review} "
+            f"flagged as needing further scholarly review."
+        )
+        return {"answer": answer, "matched_codes": []}
 
-### 2. Deploy on Streamlit Cloud
+    if kind == 'category_count':
+        names = (
+            df.groupby('category_letter')['category_name']
+            .first()
+            .sort_index()
+        )
+        listing = "\n".join(f"- {l}: {n}" for l, n in names.items())
+        answer = (
+            f"There are {len(names)} categories in the Gardiner Sign List:\n\n"
+            f"{listing}"
+        )
+        return {"answer": answer, "matched_codes": []}
 
-1. Go to [share.streamlit.io](https://share.streamlit.io) → New app
-2. Repository: `mutahir-ahmed-ai/hieroglyph-explorer`
-3. Main file: `app.py`
-4. Advanced settings → Secrets:
+    if kind in ('category_least', 'category_most'):
+        counts = df.groupby('category_letter').size()
+        names = df.groupby('category_letter')['category_name'].first()
+        n = int(counts.min() if kind == 'category_least' else counts.max())
+        adjective = "fewest" if kind == 'category_least' else "most"
+        # Several categories can share the same count — name every one,
+        # not just the first (idxmin/idxmax silently drop the others).
+        letters = counts[counts == n].index.tolist()
+        if len(letters) == 1:
+            answer = (
+                f"The category with the {adjective} signs is "
+                f"{letters[0]} ({names[letters[0]]}) with {n} signs."
+            )
+        else:
+            listing = ", ".join(f"{l} ({names[l]})" for l in letters)
+            answer = (
+                f"{len(letters)} categories tie for the {adjective} signs, "
+                f"with {n} signs each: {listing}."
+            )
+        return {"answer": answer, "matched_codes": []}
 
-```toml
-GROQ_API_KEY = "your_groq_key_here"
-```
+    return {"answer": "Unable to compute that.", "matched_codes": []}
 
-5. Deploy — first build takes 3-4 minutes (downloads sentence-transformers model)
 
----
+# ── Main entry point ────────────────────────────────────────────────────────
 
-## Author
+def query_knowledge_base(
+    query: str,
+    vector_store: FAISS,
+    groq_api_key: str,
+    df: pd.DataFrame,
+    k: int = 5,
+) -> dict:
+    """
+    Three-phase retrieval:
+    0. Aggregate/meta questions (counts, most/fewest) → answered
+       deterministically from pandas. No LLM call, zero hallucination risk.
+    1. Gardiner code(s) detected → direct DataFrame lookup, guaranteed hit.
+    2. FAISS semantic search fills the remaining context slots.
+    """
 
-**Mutahir Ahmed** — AI Developer | Published researcher — deep-learning hieroglyph detection (ICGCET 2021)
+    # Phase 0 — deterministic aggregate answers
+    agg = _detect_aggregate_query(query, df)
+    if agg:
+        return _answer_aggregate(agg[0], agg[1], df)
 
-This project connects Mutahir's published research on computational analysis of Egyptian hieroglyphs to his 2026 AI development portfolio. The Gardiner Sign List knowledge base was compiled and structured specifically for this application.
+    # Phase 1 — direct lookups for every code mentioned
+    final_context_parts = []
+    matched_codes = []
+    for code in _extract_gardiner_codes(query, df):
+        text = _direct_lookup(code, df)
+        if text:
+            final_context_parts.append(f"[Sign {code}]\n{text}")
+            matched_codes.append(code)
 
-[GitHub](https://github.com/mutahir-ahmed-ai)
+    # Phase 2 — FAISS semantic search fills remaining slots
+    semantic_results = vector_store.similarity_search(query, k=k)
+    seen = set(c.upper() for c in matched_codes)
+    for doc in semantic_results:
+        if len(final_context_parts) >= k:
+            break
+        code = doc.metadata.get("gardiner_code", "")
+        if code.upper() not in seen:
+            final_context_parts.append(f"[Sign {code}]\n{doc.page_content}")
+            matched_codes.append(code)
+            seen.add(code.upper())
+
+    context = "\n\n---\n\n".join(final_context_parts)
+
+    system_prompt = """You are an expert Egyptologist and hieroglyph scholar.
+Answer questions about ancient Egyptian hieroglyphs using the provided knowledge base context.
+
+Your answers should:
+- Be accurate, detailed, and educational
+- Explain technical terms (phonogram, determinative, biliteral etc.) in plain language
+- Reference specific Gardiner sign codes when relevant (e.g. G17 for the owl)
+- Be engaging — hieroglyphs are fascinating and you should convey that
+
+IMPORTANT rules:
+- If the user asks about SPECIFIC sign codes (V34, G17, Aa10 etc.), the first context
+  blocks contain those signs. Focus your answer on them.
+- Use exact facts from the context — phonetic values, meanings, contexts.
+- If the requested sign is genuinely absent from the context, say so honestly and briefly.
+- Do NOT invent or guess information. Everything must come from the context.
+- The context contains only the retrieved signs, never the full sign list —
+  so never claim to give exhaustive counts or complete listings.
+
+Base your answer on the provided context only."""
+
+    user_message = f"""Knowledge base context:
+{context}
+
+Question: {query}
+
+Please provide a detailed, accurate answer."""
+
+    client = Groq(api_key=groq_api_key)
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_message},
+        ],
+        temperature=0.3,
+        # gpt-oss is a reasoning model: its hidden reasoning tokens count
+        # towards max_tokens, so leave room for the visible answer too.
+        max_tokens=2048,
+        # Low effort is plenty for answering from retrieved context and
+        # keeps responses fast. Sent via extra_body so it works on any
+        # groq SDK version.
+        extra_body={"reasoning_effort": "low"},
+    )
+
+    return {
+        "answer":        response.choices[0].message.content,
+        "matched_codes": matched_codes,
+    }
